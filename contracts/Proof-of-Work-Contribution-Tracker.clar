@@ -6,6 +6,10 @@
 (define-constant ERR_INSUFFICIENT_BALANCE (err u104))
 (define-constant ERR_INVALID_REWARD (err u105))
 
+(define-constant STREAK_BONUS_MULTIPLIER u50)
+(define-constant MAX_STREAK_BONUS u500000)
+(define-constant STREAK_WINDOW u144)
+
 (define-data-var total-contributors uint u0)
 (define-data-var total-contributions uint u0)
 (define-data-var reward-per-contribution uint u1000000)
@@ -199,4 +203,90 @@
 
 (define-read-only (get-reward-amount)
   (var-get reward-per-contribution)
+)
+
+(define-map contributor-streaks
+  principal
+  {
+    current-streak: uint,
+    longest-streak: uint,
+    last-contribution-day: uint,
+    total-streak-bonus: uint
+  }
+)
+
+(define-private (get-day-from-block (blk-height uint))
+  (/ blk-height STREAK_WINDOW)
+)
+
+(define-private (calculate-streak-bonus (streak uint))
+  (let ((bonus (* streak STREAK_BONUS_MULTIPLIER)))
+    (if (> bonus MAX_STREAK_BONUS) MAX_STREAK_BONUS bonus)
+  )
+)
+
+(define-private (max (a uint) (b uint))
+  (if (> a b) a b)
+)
+
+(define-public (update-contribution-streak (contributor principal))
+  (let (
+    (current-day (get-day-from-block stacks-block-height))
+    (existing-streak (default-to 
+      { current-streak: u0, longest-streak: u0, last-contribution-day: u0, total-streak-bonus: u0 }
+      (map-get? contributor-streaks contributor)))
+    (last-day (get last-contribution-day existing-streak))
+    (current-streak-count (get current-streak existing-streak))
+  )
+    (let (
+      (new-streak (if (is-eq current-day (+ last-day u1))
+                    (+ current-streak-count u1)
+                    (if (is-eq current-day last-day) current-streak-count u1)))
+      (new-longest (max new-streak (get longest-streak existing-streak)))
+      (streak-bonus (calculate-streak-bonus new-streak))
+    )
+      (map-set contributor-streaks contributor {
+        current-streak: new-streak,
+        longest-streak: new-longest,
+        last-contribution-day: current-day,
+        total-streak-bonus: (+ (get total-streak-bonus existing-streak) streak-bonus)
+      })
+      (ok streak-bonus)
+    )
+  )
+)
+
+(define-read-only (get-contributor-streak (contributor principal))
+  (map-get? contributor-streaks contributor)
+)
+
+(define-read-only (get-streak-bonus-preview (streak uint))
+  (calculate-streak-bonus streak)
+)
+
+(define-read-only (get-top-streaks (limit uint))
+  (ok "Manual implementation needed for sorting")
+)
+
+(define-read-only (is-streak-active (contributor principal))
+  (match (map-get? contributor-streaks contributor)
+    streak-data (let ((days-since (- (get-day-from-block stacks-block-height) 
+                                   (get last-contribution-day streak-data))))
+                  (<= days-since u1))
+    false
+  )
+)
+
+(define-public (claim-streak-bonus (contribution-id uint))
+  (let ((contributor tx-sender))
+    (match (map-get? contributions contribution-id)
+      contribution-data (begin
+        (asserts! (is-eq contributor (get contributor contribution-data)) ERR_UNAUTHORIZED)
+        (asserts! (get verified contribution-data) ERR_UNAUTHORIZED)
+        (unwrap! (update-contribution-streak contributor) ERR_UNAUTHORIZED)
+        (ok true)
+      )
+      ERR_NOT_FOUND
+    )
+  )
 )
