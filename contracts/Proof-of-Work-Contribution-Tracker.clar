@@ -290,3 +290,130 @@
     )
   )
 )
+
+(define-map milestone-definitions
+  uint
+  {
+    name: (string-ascii 50),
+    description: (string-ascii 100),
+    requirement-type: (string-ascii 20),
+    requirement-value: uint,
+    badge-emoji: (string-ascii 10)
+  }
+)
+
+(define-map contributor-achievements
+  principal
+  {
+    milestone-1: bool,
+    milestone-2: bool,
+    milestone-3: bool,
+    milestone-count: uint,
+    last-checked-block: uint
+  }
+)
+
+(define-data-var next-milestone-id uint u1)
+
+(define-private (initialize-milestones)
+  (begin
+    (map-set milestone-definitions u1 {
+      name: "First Steps",
+      description: "Made your first contribution",
+      requirement-type: "contributions", 
+      requirement-value: u1,
+      badge-emoji: "Rocket"
+    })
+    (map-set milestone-definitions u2 {
+      name: "Committed",
+      description: "Reached 10 contributions",
+      requirement-type: "contributions",
+      requirement-value: u10, 
+      badge-emoji: "Star"
+    })
+    (map-set milestone-definitions u3 {
+      name: "Dedicated",
+      description: "Active for 30 days",
+      requirement-type: "active-days",
+      requirement-value: u30,
+      badge-emoji: "Fire"
+    })
+    (var-set next-milestone-id u4)
+    true
+  )
+)
+
+(define-private (check-milestone-earned (contributor principal) (milestone-id uint))
+  (match (map-get? milestone-definitions milestone-id)
+    milestone-data (match (get-contributor-stats contributor)
+      contributor-stats (let (
+        (req-type (get requirement-type milestone-data))
+        (req-value (get requirement-value milestone-data))
+        (current-value (if (is-eq req-type "contributions")
+                         (get contributions contributor-stats)
+                         (get active-days contributor-stats)))
+      )
+        (>= current-value req-value)
+      )
+      false
+    )
+    false
+  )
+)
+
+(define-public (check-and-award-milestones (contributor principal))
+  (let (
+    (achievements (default-to 
+      {milestone-1: false, milestone-2: false, milestone-3: false, milestone-count: u0, last-checked-block: stacks-block-height}
+      (map-get? contributor-achievements contributor)))
+  )
+    (let (
+      (earned-1 (get milestone-1 achievements))
+      (earned-2 (get milestone-2 achievements))
+      (earned-3 (get milestone-3 achievements))
+      (new-1 (and (check-milestone-earned contributor u1) (not earned-1)))
+      (new-2 (and (check-milestone-earned contributor u2) (not earned-2)))
+      (new-3 (and (check-milestone-earned contributor u3) (not earned-3)))
+      (new-count (+ (if new-1 u1 u0) (if new-2 u1 u0) (if new-3 u1 u0)))
+    )
+      (if (> new-count u0)
+        (begin
+          (map-set contributor-achievements contributor {
+            milestone-1: (or earned-1 new-1),
+            milestone-2: (or earned-2 new-2), 
+            milestone-3: (or earned-3 new-3),
+            milestone-count: (+ (get milestone-count achievements) new-count),
+            last-checked-block: stacks-block-height
+          })
+          (ok new-count)
+        )
+        (ok u0)
+      )
+    )
+  )
+)
+
+(define-private (is-positive (value uint))
+  (> value u0)
+)
+
+(define-read-only (get-contributor-achievements (contributor principal))
+  (map-get? contributor-achievements contributor)
+)
+
+(define-read-only (get-milestone-info (milestone-id uint))
+  (map-get? milestone-definitions milestone-id)
+)
+
+(define-read-only (get-milestone-progress (contributor principal))
+  (match (get-contributor-stats contributor)
+    stats (some {
+      contributions-progress: (get contributions stats),
+      active-days-progress: (get active-days stats),
+      total-earned: (get milestone-count (default-to 
+        {milestone-1: false, milestone-2: false, milestone-3: false, milestone-count: u0, last-checked-block: u0}
+        (map-get? contributor-achievements contributor)))
+    })
+    none
+  )
+)
