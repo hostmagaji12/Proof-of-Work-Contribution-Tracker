@@ -10,6 +10,13 @@
 (define-constant MAX_STREAK_BONUS u500000)
 (define-constant STREAK_WINDOW u144)
 
+(define-constant REPUTATION_PER_CONTRIBUTION u100)
+(define-constant REPUTATION_DECAY_THRESHOLD u4320)
+(define-constant REPUTATION_TIER_BRONZE u500)
+(define-constant REPUTATION_TIER_SILVER u2000)
+(define-constant REPUTATION_TIER_GOLD u5000)
+(define-constant ERR_NO_REPUTATION (err u106))
+
 (define-data-var total-contributors uint u0)
 (define-data-var total-contributions uint u0)
 (define-data-var reward-per-contribution uint u1000000)
@@ -416,4 +423,71 @@
     })
     none
   )
+)
+
+(define-map contributor-reputation
+  principal
+  {
+    reputation-score: uint,
+    tier: (string-ascii 10),
+    last-update-block: uint,
+    total-earned: uint,
+    total-decayed: uint
+  }
+)
+
+(define-private (calculate-reputation-decay (last-block uint) (current-block uint))
+  (let ((blocks-elapsed (- current-block last-block)))
+    (if (> blocks-elapsed REPUTATION_DECAY_THRESHOLD)
+      (/ blocks-elapsed REPUTATION_DECAY_THRESHOLD)
+      u0
+    )
+  )
+)
+
+(define-private (get-reputation-tier (score uint))
+  (if (>= score REPUTATION_TIER_GOLD)
+    "Gold"
+    (if (>= score REPUTATION_TIER_SILVER)
+      "Silver"
+      (if (>= score REPUTATION_TIER_BRONZE)
+        "Bronze"
+        "Novice"
+      )
+    )
+  )
+)
+
+(define-public (update-reputation (contributor principal))
+  (let (
+    (current-reputation (default-to
+      {reputation-score: u0, tier: "Novice", last-update-block: stacks-block-height, total-earned: u0, total-decayed: u0}
+      (map-get? contributor-reputation contributor)))
+    (contributor-data (unwrap! (map-get? contributors contributor) ERR_NOT_FOUND))
+    (verified-count (get contributions contributor-data))
+    (decay-amount (calculate-reputation-decay (get last-update-block current-reputation) stacks-block-height))
+  )
+    (let (
+      (raw-reputation (+ (* verified-count REPUTATION_PER_CONTRIBUTION) (get total-earned current-reputation)))
+      (decayed-reputation (if (> raw-reputation decay-amount) (- raw-reputation decay-amount) u0))
+      (new-tier (get-reputation-tier decayed-reputation))
+    )
+      (map-set contributor-reputation contributor {
+        reputation-score: decayed-reputation,
+        tier: new-tier,
+        last-update-block: stacks-block-height,
+        total-earned: raw-reputation,
+        total-decayed: (+ (get total-decayed current-reputation) decay-amount)
+      })
+      (ok {score: decayed-reputation, tier: new-tier})
+    )
+  )
+)
+
+(define-read-only (get-reputation (contributor principal))
+  (map-get? contributor-reputation contributor)
+)
+
+(define-read-only (get-reputation-tier-thresholds)
+  {bronze: REPUTATION_TIER_BRONZE, silver: REPUTATION_TIER_SILVER, gold: REPUTATION_TIER_GOLD}
 )
