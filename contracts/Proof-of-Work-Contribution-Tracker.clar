@@ -17,6 +17,14 @@
 (define-constant REPUTATION_TIER_GOLD u5000)
 (define-constant ERR_NO_REPUTATION (err u106))
 
+(define-constant QUALITY_POINTS_FAST_VERIFICATION u150)
+(define-constant QUALITY_POINTS_NORMAL_VERIFICATION u100)
+(define-constant QUALITY_POINTS_PROMPT_CLAIM u50)
+(define-constant QUALITY_VERIFICATION_THRESHOLD u288)
+(define-constant QUALITY_CLAIM_THRESHOLD u1440)
+(define-constant QUALITY_REPO_DIVERSITY_BONUS u25)
+(define-constant ERR_QUALITY_NOT_SCORED (err u107))
+
 (define-data-var total-contributors uint u0)
 (define-data-var total-contributions uint u0)
 (define-data-var reward-per-contribution uint u1000000)
@@ -490,4 +498,97 @@
 
 (define-read-only (get-reputation-tier-thresholds)
   {bronze: REPUTATION_TIER_BRONZE, silver: REPUTATION_TIER_SILVER, gold: REPUTATION_TIER_GOLD}
+)
+
+
+(define-map quality-scores
+  principal
+  {
+    total-quality-points: uint,
+    scored-contributions: uint,
+    average-score: uint,
+    repositories-count: uint,
+    last-score-update: uint
+  }
+)
+
+(define-map repository-tracker
+  { contributor: principal, repository: (string-ascii 100) }
+  bool
+)
+
+(define-private (calculate-contribution-quality-score 
+  (verification-block uint) 
+  (submission-block uint)
+  (claim-block uint)
+  (has-claimed bool))
+  (let (
+    (verification-speed (- verification-block submission-block))
+    (claim-speed (if has-claimed (- claim-block verification-block) u0))
+    (verification-points (if (<= verification-speed QUALITY_VERIFICATION_THRESHOLD)
+                           QUALITY_POINTS_FAST_VERIFICATION
+                           QUALITY_POINTS_NORMAL_VERIFICATION))
+    (claim-points (if (and has-claimed (<= claim-speed QUALITY_CLAIM_THRESHOLD))
+                    QUALITY_POINTS_PROMPT_CLAIM
+                    u0))
+  )
+    (+ verification-points claim-points)
+  )
+)
+
+(define-public (score-contribution-quality (contribution-id uint))
+  (let ((contributor tx-sender))
+    (match (map-get? contributions contribution-id)
+      contribution-data (begin
+        (asserts! (is-eq contributor (get contributor contribution-data)) ERR_UNAUTHORIZED)
+        (asserts! (get verified contribution-data) ERR_UNAUTHORIZED)
+        (let (
+          (quality-points (calculate-contribution-quality-score
+            stacks-block-height
+            (get block-height contribution-data)
+            stacks-block-height
+            (get reward-claimed contribution-data)))
+          (repo (get repository contribution-data))
+          (repo-key {contributor: contributor, repository: repo})
+          (is-new-repo (is-none (map-get? repository-tracker repo-key)))
+          (diversity-bonus (if is-new-repo QUALITY_REPO_DIVERSITY_BONUS u0))
+          (total-points (+ quality-points diversity-bonus))
+          (current-quality (default-to
+            {total-quality-points: u0, scored-contributions: u0, average-score: u0, repositories-count: u0, last-score-update: u0}
+            (map-get? quality-scores contributor)))
+          (new-total-points (+ (get total-quality-points current-quality) total-points))
+          (new-scored-count (+ (get scored-contributions current-quality) u1))
+          (new-repo-count (if is-new-repo 
+                            (+ (get repositories-count current-quality) u1)
+                            (get repositories-count current-quality)))
+        )
+          (if is-new-repo (map-set repository-tracker repo-key true) true)
+          (map-set quality-scores contributor {
+            total-quality-points: new-total-points,
+            scored-contributions: new-scored-count,
+            average-score: (/ new-total-points new-scored-count),
+            repositories-count: new-repo-count,
+            last-score-update: stacks-block-height
+          })
+          (ok total-points)
+        )
+      )
+      ERR_NOT_FOUND
+    )
+  )
+)
+
+(define-read-only (get-quality-score (contributor principal))
+  (map-get? quality-scores contributor)
+)
+
+(define-read-only (get-quality-rank-category (contributor principal))
+  (match (map-get? quality-scores contributor)
+    quality-data (let ((avg (get average-score quality-data)))
+      (some (if (>= avg u200) "Elite"
+        (if (>= avg u150) "Expert"
+          (if (>= avg u100) "Proficient"
+            "Developing")))))
+    none
+  )
 )
